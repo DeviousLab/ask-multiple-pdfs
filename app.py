@@ -2,21 +2,34 @@ import streamlit as st
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 from langchain.text_splitter import CharacterTextSplitter
-from langchain.embeddings import OpenAIEmbeddings, HuggingFaceInstructEmbeddings
-from langchain.vectorstores import FAISS
+from langchain.embeddings import OpenAIEmbeddings, FakeEmbeddings
+from langchain.vectorstores import Pinecone
 from langchain.chat_models import ChatOpenAI
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 from htmlTemplates import css, bot_template, user_template
-from langchain.llms import HuggingFaceHub
+import pinecone
+import os
+
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY") or "PINECONE_API_KEY"
+PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT") or "PINECONE_ENVIRONMENT"
+
+pinecone.init(
+    api_key=PINECONE_API_KEY,
+    environment=PINECONE_ENVIRONMENT
+)
+index = pinecone.Index("fjgpt")
+index_stats_response = index.describe_index_stats()
 
 def get_pdf_text(pdf_docs):
     text = ""
+    namespace = ""
     for pdf in pdf_docs:
         pdf_reader = PdfReader(pdf)
         for page in pdf_reader.pages:
             text += page.extract_text()
-    return text
+        namespace = pdf.name.split('/')[-1].split('.')[0]
+    return text, namespace
 
 
 def get_text_chunks(text):
@@ -30,12 +43,19 @@ def get_text_chunks(text):
     return chunks
 
 
-def get_vectorstore(text_chunks):
+def get_vectorstore(text_chunks, namespace):
     embeddings = OpenAIEmbeddings()
-    # embeddings = HuggingFaceInstructEmbeddings(model_name="hkunlp/instructor-xl")
-    vectorstore = FAISS.from_texts(texts=text_chunks, embedding=embeddings)
+    index_name = "fjgpt"
+    # embeddings = FakeEmbeddings(size=1536)
+    vectorstore = Pinecone.from_texts(texts=text_chunks, embedding=embeddings, index_name=index_name, namespace=namespace)
     return vectorstore
 
+def get_existing_vectorstore(namespace):
+    embeddings = OpenAIEmbeddings()
+    index_name = "fjgpt"
+    # embeddings = FakeEmbeddings(size=1536)
+    vectorstore = Pinecone.from_existing_index(index_name=index_name, embedding=embeddings, namespace=namespace)
+    return vectorstore
 
 def get_conversation_chain(vectorstore):
     llm = ChatOpenAI()
@@ -55,19 +75,18 @@ def handle_userinput(user_question):
     response = st.session_state.conversation({'question': user_question})
     st.session_state.chat_history = response['chat_history']
 
+    container = st.container()
     for i, message in enumerate(st.session_state.chat_history):
         if i % 2 == 0:
-            st.write(user_template.replace(
+            container.write(user_template.replace(
                 "{{MSG}}", message.content), unsafe_allow_html=True)
         else:
-            st.write(bot_template.replace(
+            container.write(bot_template.replace(
                 "{{MSG}}", message.content), unsafe_allow_html=True)
-
 
 def main():
     load_dotenv()
-    st.set_page_config(page_title="Chat with multiple PDFs",
-                       page_icon=":books:")
+    st.set_page_config(page_title="Chat with FJ Knowledge Base", page_icon=":books:")
     st.write(css, unsafe_allow_html=True)
 
     if "conversation" not in st.session_state:
@@ -76,29 +95,43 @@ def main():
         st.session_state.chat_history = None
 
     st.header("Chat with FJ Knowledge Base")
-    user_question = st.text_input("Ask a question about our products:")
+    user_question = st.text_input("Ask a question about the product:")
     if user_question:
         handle_userinput(user_question)
 
+    def disable():
+        st.session_state.disabled = True
+
+    if "disabled" not in st.session_state:
+        st.session_state.disabled = False
+
     with st.sidebar:
         st.subheader("Your manual")
+        doc_names = list(index_stats_response.namespaces.keys())
+        doc_name = st.selectbox("Select Product", options=doc_names)
+        if doc_name != '':
+            st.session_state.chat_history = None
+            vectorstore = get_existing_vectorstore(doc_name)
+            st.session_state.conversation = get_conversation_chain(vectorstore)
+
         pdf_docs = st.file_uploader(
-            "Upload your product manual PDFs here and click on 'Process'", accept_multiple_files=True)
-        if st.button("Process"):
+            "Upload your product manual PDF here and click on 'Process'", accept_multiple_files=True)
+        for pdf in pdf_docs:
+                if pdf.name.split('/')[-1].split('.')[0] in doc_names:
+                    disable()
+        if st.button("Process", on_click=disable, disabled=st.session_state.disabled):
+            
             with st.spinner("Processing"):
                 # get pdf text
-                raw_text = get_pdf_text(pdf_docs)
+                raw_text, doc_namespace = get_pdf_text(pdf_docs)
 
                 # get the text chunks
                 text_chunks = get_text_chunks(raw_text)
 
                 # create vector store
-                vectorstore = get_vectorstore(text_chunks)
-
-                # create conversation chain
-                st.session_state.conversation = get_conversation_chain(
-                    vectorstore)
-
-
+                vectorstore = get_vectorstore(text_chunks, doc_namespace)
+                # # create conversation chain
+                st.session_state.conversation = get_conversation_chain(vectorstore)
+        
 if __name__ == '__main__':
     main()
