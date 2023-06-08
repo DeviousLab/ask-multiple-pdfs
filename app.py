@@ -19,7 +19,6 @@ pinecone.init(
     environment=PINECONE_ENVIRONMENT
 )
 index = pinecone.Index("fjgpt")
-index_stats_response = index.describe_index_stats()
 
 def get_pdf_text(pdf_docs):
     text = ""
@@ -70,7 +69,6 @@ def get_conversation_chain(vectorstore):
     )
     return conversation_chain
 
-
 def handle_userinput(user_question):
     response = st.session_state.conversation({'question': user_question})
     st.session_state.chat_history = response['chat_history']
@@ -95,24 +93,35 @@ def main():
         st.session_state.chat_history = None
 
     st.header("Chat with FJ Knowledge Base")
-    user_question = st.text_input("Ask a question about the product:")
+    user_question = st.text_input("Ask a question about the product:", key="user_question")
     if user_question:
         handle_userinput(user_question)
 
     def disable():
         st.session_state.disabled = True
-
     if "disabled" not in st.session_state:
         st.session_state.disabled = False
+    
+    @st.cache_data
+    def populate():
+        manuals_list = list(index.describe_index_stats().namespaces.keys())
+        return manuals_list
+
+    def clear_question():
+        st.session_state["user_question"] = ''
 
     with st.sidebar:
         st.subheader("Your manual")
-        doc_names = list(index_stats_response.namespaces.keys())
-        doc_name = st.selectbox("Select Product", options=doc_names)
-        if doc_name != '':
-            st.session_state.chat_history = None
+        doc_names = populate()
+        previous_doc_name = st.session_state.doc_name if "doc_name" in st.session_state else ''
+        doc_name = st.selectbox("Select Product", options=doc_names, on_change=clear_question)
+        st.session_state.doc_name = doc_name 
+        if doc_name != previous_doc_name:
             vectorstore = get_existing_vectorstore(doc_name)
+            st.session_state.chat_history = None
+            st.session_state.conversation = None
             st.session_state.conversation = get_conversation_chain(vectorstore)
+        previous_doc_name = doc_name
 
         pdf_docs = st.file_uploader(
             "Upload your product manual PDF here and click on 'Process'", accept_multiple_files=True)
