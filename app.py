@@ -93,6 +93,9 @@ def main():
         st.session_state.chat_history = None
 
     st.header("Chat with FJ Knowledge Base")
+    if st.button("Clear history"):
+        st.session_state["user_question"] = ''
+        st.session_state.conversation.memory.chat_memory.messages = []
     user_question = st.text_input("Ask a question about the product:", key="user_question")
     if user_question:
         handle_userinput(user_question)
